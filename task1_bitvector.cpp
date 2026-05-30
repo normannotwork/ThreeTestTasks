@@ -25,15 +25,34 @@ public:
         : len(bits_count), bytes((bits_count + 7) / 8, 0) {}
 
     // Конструктор для создания битвектора из массива байт (длина в битах + массив байт)
-    explicit BitVector(size_t bits_count, const uint8_t* src_array) 
+    template <typename T>
+    explicit BitVector(size_t bits_count, const T* src_array)
         : len(bits_count), bytes((bits_count + 7) / 8, 0) 
     {
-        if (src_array == nullptr) return;
-        size_t byte_count = (bits_count + 7) / 8;
-        for (size_t i = 0; i < byte_count; ++i) {
-            bytes[i] = src_array[i];
-        } // или же std::memcpy(bytes.data(), src_array, byte_count); 
-        mask_last_byte(); // Убедимся, что лишние биты в последнем байте обнулены
+        if (src_array == nullptr || bits_count == 0) return;
+
+        // Вычисляем, сколько бит содержится в одном элементе типа T
+        constexpr size_t bits_in_t = sizeof(T) * 8;
+
+        for (size_t i = 0; i < bits_count; ++i) {
+            // Определяем в каком элементе src_array находится i бит
+            size_t element_idx = i / bits_in_t;
+            // Определяем позицию бита этого элемента
+            size_t bit_in_element = i % bits_in_t;
+
+            // Извлекаем бит сдвигом вправо (работает одинаково на всех архитектурах)
+            bool bit_val = (src_array[element_idx] >> bit_in_element) & 1;
+
+            // Записываем извлеченный бит в наш внутренний массив байт
+            if (bit_val) {
+                size_t byte_idx = i / 8;
+                size_t bit_idx = i % 8;
+                bytes[byte_idx] |= (1 << bit_idx);
+            }
+        }
+        
+        // На всякий случай маскируем последний байт
+        mask_last_byte();
     }
 
     BitVector(BitVector&&) noexcept = default;

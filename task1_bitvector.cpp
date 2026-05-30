@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <cstdint>
 #include <algorithm>
+#include <type_traits>
 
 class BitVector {
 private:
@@ -24,34 +25,37 @@ public:
     explicit BitVector(size_t bits_count = 0) 
         : len(bits_count), bytes((bits_count + 7) / 8, 0) {}
 
-    // Конструктор для создания битвектора из массива байт (длина в битах + массив байт)
+
     template <typename T>
     explicit BitVector(size_t bits_count, const T* src_array)
         : len(bits_count), bytes((bits_count + 7) / 8, 0) 
     {
+        // проверка типа с сообщением об ошибке
+        static_assert(std::is_integral<T>::value, "BitVector constructor needs an integral type");
+        
+        // Проверяем входные данные
         if (src_array == nullptr || bits_count == 0) return;
-
-        // Вычисляем, сколько бит содержится в одном элементе типа T
+        
+        // Вычисляем, сколько бит в одном элементе типа T
         constexpr size_t bits_in_t = sizeof(T) * 8;
 
+        using UnsignedT = typename std::make_unsigned<T>::type;
+
+        // Проходим по каждому биту и устанавливаем его в битвекторе, если он установлен в исходном массиве
         for (size_t i = 0; i < bits_count; ++i) {
-            // Определяем в каком элементе src_array находится i бит
             size_t element_idx = i / bits_in_t;
-            // Определяем позицию бита этого элемента
             size_t bit_in_element = i % bits_in_t;
-
-            // Извлекаем бит сдвигом вправо (работает одинаково на всех архитектурах)
-            bool bit_val = (src_array[element_idx] >> bit_in_element) & 1;
-
-            // Записываем извлеченный бит в наш внутренний массив байт
+            
+            // извлечение бита
+            bool bit_val = (static_cast<UnsignedT>(src_array[element_idx]) >> bit_in_element) & 1;
+            
+            // Устанавливаем бит в битвекторе
             if (bit_val) {
                 size_t byte_idx = i / 8;
                 size_t bit_idx = i % 8;
                 bytes[byte_idx] |= (1 << bit_idx);
             }
         }
-        
-        // На всякий случай маскируем последний байт
         mask_last_byte();
     }
 
@@ -110,37 +114,73 @@ public:
     }
 
     // Вариант для малых полей (до 64 бит) — Запись
-    void set_field_small(size_t offset, size_t count, uint64_t value) {
+    template <typename T>
+    void set_field_small(size_t offset, size_t count, T value) {
+        static_assert(std::is_integral<T>::value, "set_field_small requires integral type");
+
+        constexpr size_t max_bits = sizeof(T) * 8;
         if (count > 64) count = 64;
+        if (count > max_bits) count = max_bits; 
+   
+        using UnsignedT = typename std::make_unsigned<T>::type;
+        UnsignedT uval = static_cast<UnsignedT>(value);
         
-        // Побитово вытаскиваем из value и пишем в вектор
         for (size_t i = 0; i < count; ++i) {
             if (offset + i >= len) break;
-            bool bit = (value >> i) & 1;
+            bool bit = (uval >> i) & 1;
             set_single_bit(offset + i, bit);
         }
     }
 
     // Вариант для малых полей (до 64 бит) — Чтение
-    uint64_t get_field_small(size_t offset, size_t count) const {
+    template <typename T>
+    T get_field_small(size_t offset, size_t count) const {
+        static_assert(std::is_integral<T>::value, "get_field_small requires integral type");
+
+        constexpr size_t max_bits = sizeof(T) * 8;
         if (count > 64) count = 64;
-        uint64_t result = 0;
+        if (count > max_bits) count = max_bits; 
+        
+        using UnsignedT = typename std::make_unsigned<T>::type;
+        UnsignedT result = 0;
         
         for (size_t i = 0; i < count; ++i) {
             if (offset + i >= len) break;
             if (get_single_bit(offset + i)) {
-                result |= (1ULL << i); // Собираем число обратно по битам
+                result |= (static_cast<UnsignedT>(1) << i);
             }
         }
-        return result;
+        return static_cast<T>(result);
     }
-
-    // Скопировать в массив
-    void copy_to_array(uint8_t* dest_array) const {
-        if (dest_array) {
-            std::memcpy(dest_array, bytes.data(), bytes.size());
+   
+    template <typename T>
+    size_t copy_to_array(T* dest_array, size_t dest_elements_count) const {
+        // проверка типа с сообщением об ошибке
+        static_assert(std::is_integral<T>::value, "copy_to_array requires integral type");
+        
+        // Проверяем входные данные
+        if (dest_array == nullptr || dest_elements_count == 0 || len == 0) return 0;
+        
+        // Вычисляем, сколько бит в одном элементе типа T
+        constexpr size_t bits_in_t = sizeof(T) * 8;
+        size_t elements_needed = (len + bits_in_t - 1) / bits_in_t;
+        size_t elements_to_copy = std::min(dest_elements_count, elements_needed);
+        
+        // Инициализируем выходной массив нулями (на случай, если битов меньше, чем размер массива)
+        for (size_t i = 0; i < elements_to_copy; ++i) dest_array[i] = 0;
+        
+        // Проходим по каждому биту в битвекторе и устанавливаем его в выходном массиве, если он установлен в битвекторе
+        using UnsignedT = typename std::make_unsigned<T>::type;
+        for (size_t i = 0; i < len; ++i) {
+            size_t element_idx = i / bits_in_t;
+            if (element_idx >= elements_to_copy) break;
+            // извлечение бита и установка его в выходном массиве
+            if (get_single_bit(i)) {
+                dest_array[element_idx] |= static_cast<T>(static_cast<UnsignedT>(1) << (i % bits_in_t));
+            }
         }
-    }
+        return elements_to_copy;
+}
 
     // Вывод в 16-ричном формате (Старшие разряды СЛЕВА)
     std::string to_hex_string() const {
@@ -178,16 +218,5 @@ public:
         }
         mask_last_byte();
     }
-
-    void resize(size_t new_bits_count, bool fill_val = false) {
-        size_t new_byte_count = (new_bits_count + 7) / 8;
-        size_t old_byte_count = bytes.size();
-        bytes.resize(new_byte_count, fill_val ? 0xFF : 0x00);
-        len = new_bits_count;
-
-        if (new_bits_count > 0 && new_bits_count % 8 != 0)
-            mask_last_byte();
-    }
-
 
 };
